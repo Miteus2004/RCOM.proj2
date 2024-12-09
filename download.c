@@ -274,14 +274,14 @@ int enablePassiveMode(const int socket, int *port, char *ip) {
     int ip1, ip2, ip3, ip4, port1, port2;
 
     // Send the PASV command
-    if (write(socket, "pasv\r\n", 6) < 0) { // Ensure CRLF
+    if (write(socket, "pasv\r\n", 6) < 0) { 
         fprintf(stderr, "Failed to send PASV command\n");
         return -1;
     }
 
     // Receive the server's response
     int responseCode = receiveResponse(socket, response);
-    if (responseCode != PASSIVE_CODE) { // 227 is the typical code for PASV
+    if (responseCode != PASSIVE_CODE) { 
         fprintf(stderr, "Failed to enter passive mode. Response: %s\n", response);
         return -1;
     }
