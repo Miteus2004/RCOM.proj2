@@ -22,7 +22,6 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Socket to '%s' and port %d failed\n", url.ip, FTP_PORT);
         return -1;
     }
-
     if (loginToServer(&ftp, url.user, url.password) != LOGINSUCCESS_CODE) {
         fprintf(stderr, "Authentication failed with username = '%s' and password = '%s'.\n", url.user, url.password);
         return -1;
@@ -40,12 +39,13 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    if (retrieveFile(&ftp, url.resource) != READY2TRANSFER_CODE) {
-        fprintf(stderr, "Unknown resource '%s' in '%s:%d'\n", url.resource, url.ip, port);
+    int retrieveCode = retrieveFile(&ftp, url.resource);
+    if (retrieveCode < READY2TRANSFER_CODE_A || retrieveCode > READY2TRANSFER_CODE_B) {
+        fprintf(stderr, "Error: Invalid response code '%d' for retrieving resource '%s'\n", retrieveCode, url.resource);
         return -1;
     }
-
-    if (downloadFile(ftp.control_fd, ftp.data_fd, url.file) != TRANSFER_COMPLETE_CODE) {
+    
+    if (downloadFile(ftp.control_fd, ftp.data_fd, url.file) <= READY2TRANSFER_CODE_B) {
         fprintf(stderr, "Error transferring file '%s' from '%s:%d'\n", url.file, url.ip, port);
         return -1;
     }
@@ -57,26 +57,6 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 int parseURL(char *input, URL *url) {
     const char *pattern = "^ftp://(([^:@/]+)(:([^@/]+))?@)?([^/]+)/(.+)$";
@@ -155,25 +135,29 @@ int establishSocket(char *ip, int port) {
     int sockfd;
     struct sockaddr_in server_addr;
 
-    bzero((char *) &server_addr, sizeof(server_addr)); // Initialize server address
-    server_addr.sin_family = AF_INET;                 // Use IPv4
-    server_addr.sin_addr.s_addr = inet_addr(ip);      // Set server IP
-    server_addr.sin_port = htons(port);               // Set server port
+    // Initialize the server address structure
+    bzero((char *)&server_addr, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;                // IPv4
+    server_addr.sin_addr.s_addr = inet_addr(ip);     // Set IP
+    server_addr.sin_port = htons(port);              // Set port
 
-    // Create a socket
+    // Create the socket
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        printf("Failed to create socket to '%s:%d'\n", ip, port);
+        perror("Failed to create socket");           // Detailed error message
         return -1;
     }
 
     // Connect to the server
-    if (connect(sockfd, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0) {
-        printf("Failed to connect to '%s:%d'\n", ip, port);
+    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Failed to connect");                 // Detailed error message
+        close(sockfd);                               // Clean up
         return -1;
     }
 
+    printf("Socket connection established to %s:%d\n", ip, port);
     return sockfd;
 }
+
 
 int receiveResponse(int socketfd, char *buffer) {
     char tempBuffer[CODE_SIZE + 1] = {0};
@@ -192,7 +176,7 @@ int receiveResponse(int socketfd, char *buffer) {
         responseCode = atoi(tempBuffer);  // Convert to integer
         char delimiter = tempBuffer[3];
         printf("Response code: %d\n", responseCode);
-
+        
         // Check for multiline response
         if (delimiter == '-') {
             multiline = true;
@@ -221,7 +205,9 @@ int receiveResponse(int socketfd, char *buffer) {
         }
 
         printf("Message line read: %s\n", messageBuffer);
-
+        if (responseCode == 0) {
+            return receiveResponse(socketfd, buffer);
+        }
         // If not a multiline response or the final line matches the response code, break
         if (!multiline || strncmp(messageBuffer, tempBuffer, CODE_SIZE) == 0) {
             break;
@@ -355,11 +341,18 @@ int downloadFile(const int controlSocket, const int dataSocket, const char *file
         if (fwrite(buffer, 1, bytesRead, file) != bytesRead) {
             printf("Error writing to file");
             fclose(file);
+            close(dataSocket);  
             return -1;
         }
     }
 
     fclose(file);
+
+    // Close the data socket
+    if (close(dataSocket) < 0) {
+        perror("Error closing data socket");
+        return -1;
+    }
 
     if (bytesRead < 0) {
         printf("Error reading from data socket");
@@ -368,7 +361,14 @@ int downloadFile(const int controlSocket, const int dataSocket, const char *file
 
     // Confirm file transfer completion
     char response[MAX_LENGTH];
-    return receiveResponse(controlSocket, response);
+    int responseCode = receiveResponse(controlSocket, response);
+
+    if (responseCode != TRANSFER_COMPLETE_CODE) {
+        printf("Error: Transfer not confirmed by server. Response: %s\n", response);
+        return -1;
+    }
+
+    return responseCode;
 }
 
 int disconnectFromServer(FTP* ftp) {
@@ -386,7 +386,7 @@ int terminateConnection(const int controlSocket, const int dataSocket) {
         }
         
         // Read the server's response to QUIT
-        if (receiveResponse(controlSocket, response) < 0) {
+        if (receiveResponse(controlSocket, response) != GOODBYE_CODE) {
             fprintf(stderr, "Error reading response to QUIT command\n");
         } else {
             printf("Server response to QUIT: %s\n", response);
@@ -398,17 +398,5 @@ int terminateConnection(const int controlSocket, const int dataSocket) {
             return -1;
         }
     }
-
-    // Close the data socket, if it exists
-    if (dataSocket >= 0) {
-        if (close(dataSocket) < 0) {
-            perror("Error closing data socket");
-            return -1;
-        }
-    }
-
     return 0; 
 }
-
-
-
