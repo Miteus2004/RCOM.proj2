@@ -160,68 +160,79 @@ int establishSocket(char *ip, int port) {
 
 
 int receiveResponse(int socketfd, char *buffer) {
-    char tempBuffer[CODE_SIZE + 1] = {0};
+    char tempBuffer[MAX_LENGTH + 1] = {0};
     char messageBuffer[MAX_LENGTH] = {0};
-    int bytesRead, totalBytes = 0, responseCode;
+    int bytesRead, responseCode = 0, initialResponseCode = 0;
+    char delimiter;
     bool multiline = false;
 
+    // Initialize buffer
+    buffer[0] = '\0';
+
     while (1) {
-        // Read response code 
-        bytesRead = read(socketfd, tempBuffer, CODE_SIZE);
-        if (bytesRead < CODE_SIZE) {
-            printf("Error: Failed to read response code. Bytes read: %d\n", bytesRead);
-            return -1; 
-        }
-        tempBuffer[CODE_SIZE] = '\0'; // Null-terminate for safety
-        responseCode = atoi(tempBuffer);  // Convert to integer
-        char delimiter = tempBuffer[3];
-        printf("Response code: %d\n", responseCode);
-        
-        // Check for multiline response
-        if (delimiter == '-') {
-            multiline = true;
-            printf("Multiline response detected.\n");
-        } else if (delimiter == ' ') {
-            multiline = false;
-        } else {
-            printf("Invalid response delimiter: %c\n", delimiter);
+        // Read from the socket
+        bytesRead = read(socketfd, tempBuffer, MAX_LENGTH);
+        if (bytesRead < 0) {
+            perror("Failed to read from socket");
+            return -1;
+        } else if (bytesRead == 0) {
+            printf("Connection closed by server\n");
             return -1;
         }
 
-        // Read the rest of the message
-        while (1) {
-            bytesRead = read(socketfd, &messageBuffer[totalBytes], 1);
-            if (bytesRead <= 0) {
-                printf("Error: Failed to read message line. Bytes read: %d\n", bytesRead);
-                return -1;
+        // Null-terminate the received data
+        tempBuffer[bytesRead] = '\0';
+        printf("Received message: %s\n", tempBuffer);
+
+        // Process each line in the received buffer
+        char *line = strtok(tempBuffer, "\r\n");
+        while (line != NULL) {
+            // Check the response code and delimiter on the first line
+            if (initialResponseCode == 0 && sscanf(line, "%3d%c", &responseCode, &delimiter) >= 2) {
+                initialResponseCode = responseCode;
+                multiline = (delimiter == '-');
+                printf("Response code: %d\n", responseCode);
+                printf("Delimiter: %c\n", delimiter);
+
+                if (multiline) {
+                    printf("Multiline response detected.\n");
+                }
             }
-            // Break on newline
-            if (messageBuffer[totalBytes] == '\n') {
-                totalBytes++;
-                messageBuffer[totalBytes] = '\0';
-                break;
+
+            // Extract the message part of the line (excluding response code and delimiter)
+            char *messageStart = line + 4; // Skip the response code and delimiter
+            if (*messageStart != '\0') {  // Ensure the line has content beyond the code
+                strncat(messageBuffer, messageStart, MAX_LENGTH - strlen(messageBuffer) - 1);
+                strncat(messageBuffer, "\n", MAX_LENGTH - strlen(messageBuffer) - 1);
+            } else {
+                strncat(messageBuffer, "\n", MAX_LENGTH - strlen(messageBuffer) - 1); // Preserve blank lines
             }
-            totalBytes++;
+
+            // For multi-line, stop if the termination line is detected
+            if (multiline && sscanf(line, "%3d%c", &responseCode, &delimiter) == 2) {
+                if (responseCode == initialResponseCode && delimiter == ' ') {
+                    multiline = false;
+                }
+            }
+
+            // Process the next line
+            line = strtok(NULL, "\r\n");
         }
 
-        printf("Message line read: %s\n", messageBuffer);
-        if (responseCode == 0) {
-            return receiveResponse(socketfd, buffer);
-        }
-        // If not a multiline response or the final line matches the response code, break
-        if (!multiline || strncmp(messageBuffer, tempBuffer, CODE_SIZE) == 0) {
+        // Exit the loop if not multiline or the end of the response is reached
+        if (!multiline) {
             break;
         }
-
-        totalBytes = 0; // Reset for reading the next line in multiline responses
     }
+
+    printf("Final response (text only): %s\n", messageBuffer);
 
     // Copy the final response into the provided buffer
     strncpy(buffer, messageBuffer, MAX_LENGTH - 1);
     buffer[MAX_LENGTH - 1] = '\0';
-    return responseCode;
-}
 
+    return initialResponseCode;
+}
 
 int loginToServer(FTP* ftp, char* username, char* password) {
     return authenticate(ftp->control_fd, username, password);
